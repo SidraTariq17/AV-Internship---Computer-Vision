@@ -1,0 +1,117 @@
+import cv2
+import pandas as pd
+import numpy as np
+from ultralytics import YOLO
+import cvzone
+import Tracker_module as T  # Import your custom tracker module
+import time
+
+# Load YOLOv8 model
+model = YOLO('yolov8s.pt')
+
+# Initialize video capture
+cap = cv2.VideoCapture(
+    r"video.mp4")
+
+if not cap.isOpened():
+    print("Error: Could not open video.")
+    exit()
+
+# Read class names from the coco.txt file
+with open(
+        r"coco.txt",
+        "r") as my_file:
+    data = my_file.read()
+class_list = data.split("\n")
+
+count = 0
+
+# Initialize trackers for cars, buses, and trucks
+tracker = T.Tracker()  # For cars
+tracker1 = T.Tracker()  # For buses
+tracker2 = T.Tracker()  # For trucks
+
+# Store the center points for each object
+path_cars = {}
+path_buses = {}
+path_trucks = {}
+
+# Known focal length (in pixels) and real-world dimensions (in meters)
+focal_length = 730  # Example focal length in pixels (calibrate this value based on your camera)
+car_real_world_width = 1.8  # Average car width in meters
+bus_real_world_width = 3.0  # Average bus width in meters
+truck_real_world_width = 2.5  # Average truck width in meters
+
+# Function to calculate distance using the pinhole camera model
+def calculate_distance_pinhole(frame, bbox_idx, focal_length, real_world_width, vehicle_type):
+    for bbox in bbox_idx:
+        x3, y3, x4, y4, id1 = bbox
+        bbox_width = x4 - x3  # Width of the bounding box in pixels
+
+        # Distance calculation using pinhole camera model
+        if bbox_width > 0:
+            distance = (focal_length * real_world_width) / bbox_width
+
+            # Display the distance on the frame
+            cx = int((x3 + x4) / 2)
+            cy = int((y3 + y4) / 2)
+            cvzone.putTextRect(frame, f'{vehicle_type} {id1} | {distance:.2f} m', (x3, y3 - 10), scale=0.8, thickness=1, offset=3,
+                               colorR=(0, 255, 0), colorT=(0, 0, 0))
+
+            # Draw bounding boxes and IDs
+            cv2.circle(frame, (cx, cy), 4, (255, 0, 0), -1)
+            cv2.rectangle(frame, (x3, y3), (x4, y4), (255, 0, 255), 2)
+
+
+try:
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Failed to grab frame or end of video")
+            break
+        count += 1
+
+        frame = cv2.resize(frame, (640, 360))
+
+        # Run object detection
+        results = model.predict(frame, conf=0.5, iou=0.4)
+        a = results[0].boxes.data
+        px = pd.DataFrame(a).astype("float")
+
+        cars, buses, trucks = [], [], []
+        for index, row in px.iterrows():
+            x1 = int(row[0])
+            y1 = int(row[1])
+            x2 = int(row[2])
+            y2 = int(row[3])
+            d = int(row[5])
+
+            if 'car' in class_list[d]:
+                cars.append([x1, y1, x2, y2])
+            elif 'bus' in class_list[d]:
+                buses.append([x1, y1, x2, y2])
+            elif 'truck' in class_list[d]:
+                trucks.append([x1, y1, x2, y2])
+
+        # Update trackers for cars, buses, and trucks
+        bbox_idx_cars = tracker.update(cars)
+        bbox_idx_buses = tracker1.update(buses)
+        bbox_idx_trucks = tracker2.update(trucks)
+
+        # Draw detection boxes on the frame
+        calculate_distance_pinhole(frame, bbox_idx_cars, focal_length, car_real_world_width, "Car")
+        calculate_distance_pinhole(frame, bbox_idx_buses, focal_length, bus_real_world_width, "Bus")
+        calculate_distance_pinhole(frame, bbox_idx_trucks, focal_length, truck_real_world_width, "Truck")
+
+        # Display the frame
+        cv2.imshow("Vehicle Detection and Distance Estimation", frame)
+
+        if cv2.waitKey(1) & 0xFF == 27:  # Exit on ESC key
+            break
+
+except Exception as e:
+    print(f"Error: {str(e)}")
+
+finally:
+    cap.release()
+    cv2.destroyAllWindows()
